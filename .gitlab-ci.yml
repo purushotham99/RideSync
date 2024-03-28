@@ -1,0 +1,125 @@
+stages: # List of stages for jobs, and their order of execution
+  - build-backend
+  # - build-frontend
+  - test-backend
+  - quality
+  - publish-backend
+  - publish-frontend
+  - deploy-backend
+  - deploy-frontend
+
+build-backend:
+  stage: build-backend
+  image: maven:latest
+  script:
+    - cd ridesync_backend
+    - mvn clean package
+  only:
+    - develop
+
+test-backend:
+  stage: test-backend
+  image: maven:latest
+  script:
+    - cd ridesync_backend
+    - mvn test
+  only:
+    - develop
+
+quality:
+  stage: quality
+  image: openjdk:17-jdk-alpine
+  script:
+    - echo "Extracting the smells..."
+    - mkdir smells/
+    - echo $CI_PROJECT_DIR
+    - java -jar $CI_PROJECT_DIR/.gitlab/DesigniteJava.jar -i $CI_PROJECT_DIR/ridesync_backend -o $CI_PROJECT_DIR/smells/ -d
+  artifacts:
+    paths:
+      - smells/
+      - $CI_PROJECT_DIR
+  only:
+    - develop
+
+publish-backend:
+  image: docker:latest
+  stage: publish-backend
+  tags:
+    - test-runner
+  # checking tags
+  variables:
+    # these values may need to be different if using TLS, k8s, etc.
+
+    # You can alternatively set defaults in your runner config
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://docker:2375"
+  services:
+    - docker:dind
+
+  script:
+    - pwd
+    - echo $SERVER_IP
+    - docker --version
+    - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PWD docker.io
+    - cd ridesync_backend
+    - docker build -t docker.io/meer2838/cicdtest:backend .
+    - docker push docker.io/meer2838/cicdtest:backend
+  only:
+    - develop
+
+publish-frontend:
+  image: docker:latest
+  stage: publish-frontend
+  tags:
+    - test-runner
+  # checking tags
+  variables:
+    # these values may need to be different if using TLS, k8s, etc.
+
+    # You can alternatively set defaults in your runner config
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://docker:2375"
+  services:
+    - docker:dind
+
+  script:
+    - pwd
+    - echo $SERVER_IP
+    - docker --version
+    - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PWD docker.io
+    - cd ridesync_frontend
+    - docker build -t docker.io/meer2838/cicdtest:frontend .
+    - docker push docker.io/meer2838/cicdtest:frontend
+  only:
+    - develop
+
+deploy-backend:
+  image: alpine:latest
+  stage: deploy-backend
+  tags:
+    - test-runner
+  script:
+    - apk update && apk add openssh-client sshpass
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PWD docker.io"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull docker.io/meer2838/cicdtest:backend"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f my-backend-app || true"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 8073:8073 -e SERVER_PORT=$SERVER_PORT -e DEV_DB_URL=$DEV_DB_URL -e DEV_DB_USER=$DEV_DB_USER -e REMOTE_DB_PASSWORD=$REMOTE_DB_PASSWORD -e FRONTEND_PORT=$FRONTEND_PORT -e IP_ADDRESS=$IP_ADDRESS --name my-backend-app docker.io/meer2838/cicdtest:backend"
+  environment:
+    name: development
+    url: http://172.17.1.101:$SERVER_PORT
+  only:
+    - develop
+
+deploy-frontend:
+  image: alpine:latest
+  stage: deploy-frontend
+  tags:
+    - test-runner
+  script:
+    - apk update && apk add openssh-client sshpass
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PWD docker.io"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull docker.io/meer2838/cicdtest:frontend"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f my-frontend-app || true"
+    - sshpass -p "$MY_PASS" ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 3000:3000 --name my-frontend-app -e REACT_APP_API_URL=$REACT_APP_API_URL docker.io/meer2838/cicdtest:frontend"
+  only:
+    - develop
